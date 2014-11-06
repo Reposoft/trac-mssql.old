@@ -58,6 +58,7 @@ re_equal = re.compile("(\w+)\s*=\s*(['\w]+|\?)", re.IGNORECASE)
 re_isnull = re.compile("(\w+) IS NULL", re.IGNORECASE)
 re_select = re.compile('SELECT( DISTINCT)?( TOP)?', re.IGNORECASE)
 re_coalesce_equal = re.compile("(COALESCE\([^)]+\))=([^,]+)", re.IGNORECASE)
+re_cast = re.compile("CAST\(\s*([\.\w]+)\s*AS\s*([\.\w]+)\)", re.IGNORECASE + re.MULTILINE)
 
 def _to_sql(table):
 	sql = ["CREATE TABLE %s (" % table.name]
@@ -246,8 +247,9 @@ class MSSQLConnection(ConnectionBase, ConnectionWrapper):
 			self._is_closed = True
 
 	def cast(self, column, type):
-		if type == 'int' or type == 'int64':
-			type = 'signed'
+		self.log.debug("CASTing %s to %s" % (column,type))
+		if type == 'signed':
+			type = 'int'
 		elif type == 'text':
 			type = 'varchar(max)'
 		return 'CAST(%s AS %s)' % (column, type)
@@ -366,11 +368,26 @@ class SQLServerCursor(object):
 		else:
 			for match in reversed([match for match in re_select.finditer(sql) if match.group(2) == None]):
 				sql = sql[:match.end()] + ' TOP 1000' + sql[match.end():]
+
+		match = re_cast.search(sql)
+		if match:
+			self.log.debug("Found a cast: " + match.group(0))
+			source = match.group(1)
+			dest = match.group(2)
+			if dest == "signed":
+				self.log.debug("Cast was signed: " + dest)
+				sql = sql.replace("AS signed", "AS int")
+			else:
+				self.log.debug("Cast wasn't signed: " + dest)
+		self.log.debug("Executing sql %s with %s" % (sql,args))
 		try:
 			if self.log:  # See [trac] debug_sql in trac.ini
 				self.log.debug(sql)
 				self.log.debug(args)
-			self.cursor.execute(sql, args or [])
+			if args:
+				self.cursor.execute(sql, tuple(args))
+			else:
+				self.cursor.execute(sql, ())
 		except:
 			self.cnx.rollback()
 			raise
