@@ -25,6 +25,7 @@ from trac.core import *
 from trac.config import Option
 from trac.db.api import ConnectionBase, DatabaseManager, IDatabaseConnector, \
 						_parse_db_str, get_column_names
+from trac.db import Table, Column, Index
 from trac.db.util import ConnectionWrapper, IterableCursor
 from trac.env import IEnvironmentSetupParticipant, ISystemInfoProvider
 from trac.util import as_int, get_pkginfo
@@ -59,54 +60,6 @@ re_isnull = re.compile("(\w+) IS NULL", re.IGNORECASE)
 re_select = re.compile('SELECT( DISTINCT)?( TOP)?', re.IGNORECASE)
 re_coalesce_equal = re.compile("(COALESCE\([^)]+\))=([^,]+)", re.IGNORECASE)
 re_cast = re.compile("CAST\(\s*([\.\w]+)\s*AS\s*([\.\w]+)\)", re.IGNORECASE + re.MULTILINE)
-
-def _to_sql(table):
-	sql = ["CREATE TABLE %s (" % table.name]
-	coldefs = []
-	for column in table.columns:
-		column.name = _column_map.get(column.name, column.name)
-		ctype = column.type.lower()
-		ctype = _type_map.get(ctype, ctype)
-		#  for SQL Server, patch for "enum" table, value is not text, use int instead.
-		if table.name == 'enum' and column.name == 'value':
-			ctype = 'int'
-		if (table.name, column.name) in [
-				('wiki', 'text'),
-				('report', 'query'),
-				('report', 'description'),
-				('milestone', 'description'),
-				('version', 'description'),
-			]:
-			ctype = 'nvarchar(MAX)'
-		if (table.name, column.name) in [
-				('ticket', 'description'),
-				('ticket_change', 'oldvalue'),
-				('ticket_change', 'newvalue'),
-				('ticket_custom', 'value'),
-				('session_attribute', 'value')
-			]:
-			ctype = 'nvarchar(4000)'
-
-# I'm using SQL Userver 2012 Express
-		if column.auto_increment:
-			ctype = 'INT IDENTITY NOT NULL'  # SQL Server Style
-#            ctype = 'INT UNSIGNED NOT NULL AUTO_INCREMENT'  # MySQL Style
-#            ctype = 'SERIAL'  # PGSQL Style
-#            ctype = "integer constraint P_%s PRIMARY KEY" % table.name  # SQLite Style
-		else:
-#            if column.name in table.key or any([column.name in index.columns for index in table.indices]):
-#                ctype = {'ntext': 'nvarchar(255)'}.get(ctype, ctype)  # SQL Server cannot use text as PK
-			if len(table.key) == 1 and column.name in table.key:
-				ctype += " constraint P_%s PRIMARY KEY" % table.name
-		coldefs.append("    %s %s" % (column.name, ctype))
-	if len(table.key) > 1:
-		coldefs.append("    UNIQUE (%s)" % ','.join(table.key))
-	sql.append(',\n'.join(coldefs) + '\n);')
-	yield '\n'.join(sql)
-	for index in table.indices:
-		type_ = ('INDEX', 'UNIQUE INDEX')[index.unique]
-		yield "CREATE %s %s_%s_idx ON %s (%s);" % (type_, table.name,
-			  '_'.join(index.columns), table.name, ','.join(index.columns))
 
 class MSSQLConnector(Component):
 	"""Database connector for MSSQL version 4.1 and greater.
@@ -166,18 +119,75 @@ class MSSQLConnector(Component):
 		cnx = self.get_connection(path, log, user, password, host, port,
 								  params)
 		#self._verify_variables(cnx)
+		self.clustered = []
 		cursor = cnx.cursor()
 		if schema is None:
 			from trac.db_default import schema
 		for table in schema:
 			for stmt in self.to_sql(table):
-				print "Executing '%s'" % stmt
-				self.log.debug(stmt)
+				#print "Executing '%s'" % stmt
+				#self.log.debug(stmt)
 				cursor.execute(stmt)
 		cnx.commit()
-	
+
 	def to_sql(self, table):
-		return _to_sql(table)
+		sql = ["CREATE TABLE %s (" % table.name]
+		coldefs = []
+		for column in table.columns:
+			column.name = _column_map.get(column.name, column.name)
+			ctype = column.type.lower()
+			ctype = _type_map.get(ctype, ctype)
+			#  for SQL Server, patch for "enum" table, value is not text, use int instead.
+			if table.name == 'enum' and column.name == 'value':
+				ctype = 'int'
+			if (table.name, column.name) in [
+					('wiki', 'text'),
+					('report', 'query'),
+					('report', 'description'),
+					('milestone', 'description'),
+					('version', 'description'),
+				]:
+				ctype = 'nvarchar(MAX)'
+			if (table.name, column.name) in [
+					('ticket', 'description'),
+					('ticket_change', 'oldvalue'),
+					('ticket_change', 'newvalue'),
+					('ticket_custom', 'value'),
+					('session_attribute', 'value')
+				]:
+				ctype = 'nvarchar(4000)'
+
+	# I'm using SQL Userver 2012 Express
+			if column.auto_increment:
+				ctype = 'INT IDENTITY NOT NULL'  # SQL Server Style
+	#            ctype = 'INT UNSIGNED NOT NULL AUTO_INCREMENT'  # MySQL Style
+	#            ctype = 'SERIAL'  # PGSQL Style
+	#            ctype = "integer constraint P_%s PRIMARY KEY" % table.name  # SQLite Style
+			else:
+	#            if column.name in table.key or any([column.name in index.columns for index in table.indices]):
+	#                ctype = {'ntext': 'nvarchar(255)'}.get(ctype, ctype)  # SQL Server cannot use text as PK
+				if len(table.key) == 1 and column.name in table.key:
+					ctype += " constraint P_%s PRIMARY KEY" % table.name
+					self.clustered.append(table.name)
+			coldefs.append("    %s %s" % (column.name, ctype))
+		if len(table.key) > 1:
+			coldefs.append("    UNIQUE (%s)" % ','.join(table.key))
+		sql.append(',\n'.join(coldefs) + '\n);')
+		yield '\n'.join(sql)
+		if len(table.indices) == 0:
+			table.indices.append(Index([table.columns[0].name]))
+		for index in table.indices:
+			type_ = ('INDEX', 'UNIQUE INDEX')[index.unique]
+			if not table.name in self.clustered:
+				print "%s is not in %s so we add CLUSTERED to index %s" %(table.name,self.clustered,index.columns)
+				clustered_bit = "CLUSTERED"
+				self.clustered.append(table.name)
+			else:
+				print "%s is in %s so we don't add CLUSTERED to index %s" %(table.name,self.clustered,index.columns)
+				clustered_bit = ""
+			yield "CREATE %s %s %s_%s_idx ON %s (%s);" % (clustered_bit, type_, table.name,
+				  '_'.join(index.columns), table.name, ','.join(index.columns))
+
 
 	def alter_column_types(self, table, columns):
 		"""Yield SQL statements altering the type of one or more columns of
@@ -220,7 +230,11 @@ class MSSQLConnection(ConnectionBase, ConnectionWrapper):
 			path = path[1:]
 		if 'host' in params:
 			host = params['host']
-
+		servername = host.split(".")[0]
+		# Should be a if AZURE here
+		user = user + "@" + servername
+		#self.clustered = [] # Here we put table names when we create a clustered index for them
+		print("Connecting to '%s' with database '%s' using username '%s' and password '%s'" % (host,path,user,password))
 		cnx = pymssql.connect(database=path, user=user, password=password, host=host,
 							  port=port)
 		self.schema = path
@@ -379,7 +393,7 @@ class SQLServerCursor(object):
 				sql = sql.replace("AS signed", "AS int")
 			else:
 				self.log.debug("Cast wasn't signed: " + dest)
-		self.log.debug("Executing sql %s with %s" % (sql,args))
+		#self.log.debug("Executing sql %s with %s" % (sql,args))
 		try:
 			if self.log:  # See [trac] debug_sql in trac.ini
 				self.log.debug(sql)
