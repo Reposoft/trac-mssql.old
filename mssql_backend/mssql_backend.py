@@ -118,6 +118,7 @@ class MSSQLConnector(Component):
 				host=None, port=None, params={}):
 		cnx = self.get_connection(path, log, user, password, host, port,
 								  params)
+		self.is_azure = host.find("database.windows.net") != -1
 		#self._verify_variables(cnx)
 		self.clustered = []
 		cursor = cnx.cursor()
@@ -168,24 +169,22 @@ class MSSQLConnector(Component):
 	#                ctype = {'ntext': 'nvarchar(255)'}.get(ctype, ctype)  # SQL Server cannot use text as PK
 				if len(table.key) == 1 and column.name in table.key:
 					ctype += " constraint P_%s PRIMARY KEY" % table.name
-					self.clustered.append(table.name)
+					self.clustered.append(table.name) # For the Azure case
 			coldefs.append("    %s %s" % (column.name, ctype))
 		if len(table.key) > 1:
 			coldefs.append("    UNIQUE (%s)" % ','.join(table.key))
 		sql.append(',\n'.join(coldefs) + '\n);')
 		yield '\n'.join(sql)
-		if len(table.indices) == 0:
+		if self.is_azure and len(table.indices) == 0:
 			table.indices.append(Index([table.columns[0].name]))
 		for index in table.indices:
 			type_ = ('INDEX', 'UNIQUE INDEX')[index.unique]
-			if not table.name in self.clustered:
-				print "%s is not in %s so we add CLUSTERED to index %s" %(table.name,self.clustered,index.columns)
-				clustered_bit = "CLUSTERED"
+			if self.is_azure and not table.name in self.clustered:
+				clustered_bit = "CLUSTERED "
 				self.clustered.append(table.name)
 			else:
-				print "%s is in %s so we don't add CLUSTERED to index %s" %(table.name,self.clustered,index.columns)
 				clustered_bit = ""
-			yield "CREATE %s %s %s_%s_idx ON %s (%s);" % (clustered_bit, type_, table.name,
+			yield "CREATE %s%s %s_%s_idx ON %s (%s);" % (clustered_bit, type_, table.name,
 				  '_'.join(index.columns), table.name, ','.join(index.columns))
 
 
@@ -230,15 +229,14 @@ class MSSQLConnection(ConnectionBase, ConnectionWrapper):
 			path = path[1:]
 		if 'host' in params:
 			host = params['host']
-		servername = host.split(".")[0]
-		# Should be a if AZURE here
-		user = user + "@" + servername
-		#self.clustered = [] # Here we put table names when we create a clustered index for them
-		print("Connecting to '%s' with database '%s' using username '%s' and password '%s'" % (host,path,user,password))
+		is_azure = host.find("database.windows.net") != -1
+		if is_azure:
+			servername = host.split(".")[0]
+			user = user + "@" + servername
 		cnx = pymssql.connect(database=path, user=user, password=password, host=host,
 							  port=port)
 		self.schema = path
-		ConnectionWrapper.__init__(self, cnx, log)
+		conn = ConnectionWrapper.__init__(self, cnx, log)
 		self._is_closed = False
 
 	def cursor(self):
