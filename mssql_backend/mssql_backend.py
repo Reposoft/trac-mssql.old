@@ -259,7 +259,7 @@ class MSSQLConnection(ConnectionBase, ConnectionWrapper):
 			self._is_closed = True
 
 	def cast(self, column, type):
-		self.log.debug("CASTing %s to %s" % (column,type))
+		#self.log.debug("CASTing %s to %s" % (column,type))
 		if type == 'signed':
 			type = 'int'
 		elif type == 'text':
@@ -359,7 +359,6 @@ class SQLServerCursor(object):
 				column_name = match.group(1)
 				re_columns = re.compile("([a-z]+.)?%s,?" % column_name)
 				order_by = ' '.join([column for column in match.string.split(' ') if not re_columns.match(column)])
-				self.log.debug(order_by)
 				sql = sql[:end] + order_by
 
 		# transform LIMIT clause
@@ -383,15 +382,17 @@ class SQLServerCursor(object):
 
 		match = re_cast.search(sql)
 		if match:
-			self.log.debug("Found a cast: " + match.group(0))
+			#self.log.debug("Found a cast: " + match.group(0))
 			source = match.group(1)
 			dest = match.group(2)
 			if dest == "signed":
-				self.log.debug("Cast was signed: " + dest)
+				#self.log.debug("Cast was signed: " + dest)
 				sql = sql.replace("AS signed", "AS int")
 			else:
-				self.log.debug("Cast wasn't signed: " + dest)
+				pass
+				#self.log.debug("Cast wasn't signed: " + dest)
 		#self.log.debug("Executing sql %s with %s" % (sql,args))
+		sql = sql.replace("`","")
 		try:
 			if self.log:  # See [trac] debug_sql in trac.ini
 				self.log.debug(sql)
